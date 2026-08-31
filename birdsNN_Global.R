@@ -12,7 +12,7 @@ defineModule(sim, list(
   timeunit = "year",
   citation = list("citation.bib"),
   documentation = list("NEWS.md", "README.md", "birdsNN_Global.Rmd"),
-  reqdPkgs = list("SpaDES.core (>= 3.1.2.9018)", "ggplot2", "data.table", "MASS", "AER"),
+  reqdPkgs = list("SpaDES.core (>= 3.1.2.9018)", "ggplot2", "data.table", "MASS", "AER", "sf"),
   parameters = bindrows(
     #defineParameter("paramName", "paramClass", value, min, max, "parameter description"),
     defineParameter(".plots", "character", "screen", NA, NA,
@@ -49,7 +49,18 @@ defineModule(sim, list(
     #                        "short-circuit a deterministic event."))
   defineParameter("targetSpeciesEURING", "numeric", NA_real_, NA, NA,
                     "EURING code for the species of interest.",
-                    "on. NA (default) auto-picks the species with the most rows.")
+                    "on. NA (default) auto-picks the species with the most rows."),
+  defineParameter("probeflaechenShpSubpath", "character",
+                    "raw/dda/MhB_Probeflaechen_DE_S2637_epsg25832.shp", NA, NA,
+                    "Path to the DDA route-coordinate shapefile -- resolved via",
+                    "dataPrep_Monitor's resolvePath(outputPath(sim), ...): relative",
+                    "value stays under outputPath(sim) (default), absolute value",
+                    "points anywhere else (e.g. a shared data/ folder). This is",
+                    "genuinely SHARED raw data (dataPrep_Monitor also reads it), not",
+                    "module-private -- do not point this at dataPath(sim)."),
+  defineParameter("maxBlockSizeM", "numeric", 200000, NA, NA,
+                    "Cap in metres on the empirically-derived spatial CV block size.",
+                    "Matches inputs_Monitor's own landscape-scale default (200km).")
   ),
   inputObjects = bindrows(
     expectsInput(objectName = "birdTerritoryRaw", objectClass = "data.table",
@@ -62,7 +73,11 @@ defineModule(sim, list(
         createsOutput(objectName = "birdResidualCheck", objectClass = "list",
                   desc = paste("Output of fitBaselineResiduals(): residualTable,",
                                "euringCode used, fitted model object, and dispersion",
-                               "statistic. Feeds the next diagnostic step (variogram)."))
+                               "statistic. Feeds the next diagnostic step (variogram).")),
+        createsOutput(objectName = "birdBlockSize", objectClass = "list",
+                  desc = paste("Output of determineBirdBlockSize(): per-species",
+                               "empirical spatial CV block size (metres) and the",
+                               "per-route mean-residual sf object it was derived from."))
   )
 ))
 
@@ -78,6 +93,7 @@ doEvent.birdsNN_Global = function(sim, eventTime, eventType) {
       # schedule future event(s)
       sim <- scheduleEvent(sim, start(sim), "birdsNN_Global", "cleaningData")
       sim <- scheduleEvent(sim, start(sim), "birdsNN_Global", "residualCheck")
+      sim <- scheduleEvent(sim, start(sim), "birdsNN_Global", "spatialBlockCheck")
     },
     cleaningData = {
       # Here, as we are working with abundance, we need to:
@@ -97,6 +113,23 @@ doEvent.birdsNN_Global = function(sim, eventTime, eventType) {
     euringCode = P(sim)$targetSpeciesEURING
   )
       browser()
+
+    },
+    spatialBlockCheck = {
+      # Empirical spatial CV block size per species, from cv_spatial_autocor()
+      # run on per-route MEAN residuals (not raw occurrence, and not raw
+      # per-route-year residuals -- see determineBirdBlockSize.R). Reuses
+      # inputs_Monitor's determineBlockSize() (loadOrder puts inputs_Monitor
+      # before this module) rather than duplicating it -- a deliberate
+      # deviation from this codebase's usual duplicate-small-functions
+      # convention, since birdsNN_Global already structurally depends on
+      # inputs_Monitor being loaded first.
+
+      sim$birdBlockSize <- determineBirdBlockSize(
+        birdResidualCheck = sim$birdResidualCheck,
+        probeflaechenShpPath = resolvePath(outputPath(sim), P(sim)$probeflaechenShpSubpath),
+        maxBlockSizeM = P(sim)$maxBlockSizeM
+      )
 
     },
     warning(noEventWarning(sim))
